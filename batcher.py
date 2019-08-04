@@ -119,6 +119,7 @@ class Example(object):
 
 class Batch(object):
   """Class representing a minibatch of train/val/test examples for text summarization."""
+  ex_list= None
 
   def __init__(self, example_list, hps, vocab):
     """Turns the example_list into a Batch object.
@@ -152,7 +153,7 @@ class Batch(object):
     """
     # Determine the maximum length of the encoder input sequence in this batch
     max_enc_seq_len = max([ex.enc_len for ex in example_list])
-
+    self.ex_list = example_list
     # Pad the encoder input sequences up to the length of the longest sequence
     for ex in example_list:
       ex.pad_encoder_input(max_enc_seq_len, self.pad_id)
@@ -215,10 +216,11 @@ class Batch(object):
 
 
 class Batcher(object):
+  
   """A class to generate minibatches of data. Buckets examples together based on length of the encoder sequence."""
 
   BATCH_QUEUE_MAX = 100 # max number of batches the batch_queue can hold
-
+  ex_list = []
   def __init__(self, data_path, vocab, hps, single_pass):
     """Initialize the batcher. Start threads that process the data into batches.
 
@@ -304,6 +306,7 @@ class Batcher(object):
 
       abstract_sentences = [sent.strip() for sent in data.abstract2sents(abstract)] # Use the <s> and </s> tags in abstract to get a list of sentences.
       example = Example(article, abstract_sentences, self._vocab, self._hps) # Process into an Example.
+      self.ex_list.append(example)
       self._example_queue.put(example) # place the Example in the example queue.
 
 
@@ -327,6 +330,7 @@ class Batcher(object):
         if not self._single_pass:
           shuffle(batches)
         for b in batches:  # each b is a list of Example objects
+          #self.ex_list = b
           self._batch_queue.put(Batch(b, self._hps, self._vocab))
 
       else: # beam search decode mode

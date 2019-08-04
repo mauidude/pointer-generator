@@ -1,4 +1,4 @@
-# Copyright 2016 The TensorFlow Authors. All Rights Reserved.
+#t Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 # Modifications Copyright 2017 Abigail See
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,11 +22,16 @@ import numpy as np
 import tensorflow as tf
 from attention_decoder import attention_decoder
 from tensorflow.contrib.tensorboard.plugins import projector
+from bert_embedding import BertEmbedding
+
 
 FLAGS = tf.app.flags.FLAGS
 
 class SummarizationModel(object):
   """A class to represent a sequence-to-sequence model for text summarization. Supports both baseline mode, pointer-generator mode, and coverage"""
+  test1 = None
+  feed_dct_enc = None
+  enc_out = None
 
   def __init__(self, hps, vocab):
     self._hps = hps
@@ -40,6 +45,8 @@ class SummarizationModel(object):
     self._enc_batch = tf.placeholder(tf.int32, [hps.batch_size, None], name='enc_batch')
     self._enc_lens = tf.placeholder(tf.int32, [hps.batch_size], name='enc_lens')
     self._enc_padding_mask = tf.placeholder(tf.float32, [hps.batch_size, None], name='enc_padding_mask')
+    if self._hps.bert:
+      self._bert_emb =  tf.placeholder(tf.float32, [hps.batch_size, hps.max_enc_steps, 768], name='bert_emb')
     if FLAGS.pointer_gen:
       self._enc_batch_extend_vocab = tf.placeholder(tf.int32, [hps.batch_size, None], name='enc_batch_extend_vocab')
       self._max_art_oovs = tf.placeholder(tf.int32, [], name='max_art_oovs')
@@ -53,7 +60,7 @@ class SummarizationModel(object):
       self.prev_coverage = tf.placeholder(tf.float32, [hps.batch_size, None], name='prev_coverage')
 
 
-  def _make_feed_dict(self, batch, just_enc=False):
+  def _make_feed_dict(self, batch, vocab, just_enc=False):
     """Make a feed dictionary mapping parts of the batch to the appropriate placeholders.
 
     Args:
@@ -64,6 +71,8 @@ class SummarizationModel(object):
     feed_dict[self._enc_batch] = batch.enc_batch
     feed_dict[self._enc_lens] = batch.enc_lens
     feed_dict[self._enc_padding_mask] = batch.enc_padding_mask
+    if self._hps.bert: 
+       feed_dict[self._bert_emb] = self.get_bert_embedding(batch.enc_batch, vocab)
     if FLAGS.pointer_gen:
       feed_dict[self._enc_batch_extend_vocab] = batch.enc_batch_extend_vocab
       feed_dict[self._max_art_oovs] = batch.max_art_oovs
@@ -71,8 +80,22 @@ class SummarizationModel(object):
       feed_dict[self._dec_batch] = batch.dec_batch
       feed_dict[self._target_batch] = batch.target_batch
       feed_dict[self._dec_padding_mask] = batch.dec_padding_mask
+    self.feed_dct_enc = feed_dict[self._enc_batch]
     return feed_dict
-
+  
+  def get_bert_embedding(self,feed_dct_enc,vocab):
+      get_bert = BertEmbedding(max_seq_length = 400)
+      func = np.vectorize((vocab.id2word))
+      emb_word = func(feed_dct_enc)
+      print(emb_word)
+      emb=[]
+      for row in emb_word:
+         C =[]
+         for cell in row:
+             C.append(get_bert(str(cell).split())[0][1][0].tolist())
+         emb.append(C)
+      return(emb)
+  
   def _add_encoder(self, encoder_inputs, seq_len):
     """Add a single-layer bidirectional LSTM encoder to the graph.
 
@@ -210,11 +233,15 @@ class SummarizationModel(object):
       with tf.variable_scope('embedding'):
         embedding = tf.get_variable('embedding', [vsize, hps.emb_dim], dtype=tf.float32, initializer=self.trunc_norm_init)
         if hps.mode=="train": self._add_emb_vis(embedding) # add to tensorboard
-        emb_enc_inputs = tf.nn.embedding_lookup(embedding, self._enc_batch) # tensor with shape (batch_size, max_enc_steps, emb_size)
+        if hps.bert:
+          emb_enc_inputs = tf.convert_to_tensor(self._bert_emb) # tensor with shape (batch_size, max_enc_steps, emb_size)
+        else:
+          emb_enc_inputs = tf.nn.embedding_lookup(embedding, self._enc_batch) # tensor with shape (batch_size, max_enc_steps, emb_size)
         emb_dec_inputs = [tf.nn.embedding_lookup(embedding, x) for x in tf.unstack(self._dec_batch, axis=1)] # list length max_dec_steps containing shape (batch_size, emb_size)
 
       # Add the encoder.
       enc_outputs, fw_st, bw_st = self._add_encoder(emb_enc_inputs, self._enc_lens)
+      self.test1 = enc_outputs
       self._enc_states = enc_outputs
 
       # Our encoder is bidirectional and our decoder is unidirectional so we need to reduce the final encoder hidden state to the right size to be the initial decoder hidden state
@@ -319,9 +346,9 @@ class SummarizationModel(object):
     t1 = time.time()
     tf.logging.info('Time to build graph: %i seconds', t1 - t0)
 
-  def run_train_step(self, sess, batch):
+  def run_train_step(self, sess, batch,vocab):
     """Runs one training iteration. Returns a dictionary containing train op, summaries, loss, global_step and (optionally) coverage loss."""
-    feed_dict = self._make_feed_dict(batch)
+    feed_dict = self._make_feed_dict(batch,vocab)
     to_return = {
         'train_op': self._train_op,
         'summaries': self._summaries,
